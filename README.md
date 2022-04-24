@@ -16,6 +16,9 @@ This repository containts the Python code to generate the analysis for Wilson et
   
 3) Csoft_all_*.py: 
   - specific scripts to calculate outputs related to Apparent Oxygen Utilisation and Csoft from an individual model
+
+4) Strat_all_*.py
+  - specific scripts to calculate outputs related to stratification from an individual model
   
  
 Authors: Jamie D. Wilson (University of Bristol) & Anna Katavouta (National Oceanography Centre) adapting code from all authors.
