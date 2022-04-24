@@ -75,6 +75,203 @@ def dim_info(data):
     
     ####### END ######
 
+
+def compute_stratification_timeseries(dataset_T,dataset_S,areadata,model_name,nstart,nend,output_dir):
+# compute_stratification_timeseries()
+#
+# description: takes in dataset with o2, temperature, salinity and volume, calculates O2 saturation, calculates annual mean/total timeseries
+#
+# inputs:
+#|      dataset - xarray datset containing o2, thetao, so, (and volume if 4D)
+#|      model_name - name of model when saving output
+#	output_dir - relative path to output directory (include / at the end!)
+#
+# outputs:
+#|      returned array - O2sat_timeseries (monthly or yearly)
+#
+# author: Jamie D. Wilson (adapted from code by Anna Katavouta, Emily Vosper)
+
+
+	######################################
+	###### hard coded user options #######
+	sec_to_yr=60.0*60.0*24.0*365.0 # seconds to year
+	g_to_Pg=1.0/1.0e15 # grams to Petagrams
+	flag_interpolate=True
+	####################################
+	
+	# get info to force consistent renaming of dimensions/coordinates
+	t=dataset_T.thetao[nstart:nend,:,:,:]
+	s=dataset_S.so[nstart:nend,:,:,:]
+	area=areadata.areacello
+
+	# get info to force consistent renaming of dimensions/coordinates
+	info=dim_info(t)
+	t=t.rename({info[0]:'i',info[1]:'j',info[2]:'lev'})
+
+	info=dim_info(s)
+	s=s.rename({info[0]:'i',info[1]:'j',info[2]:'lev'})
+       
+	info=dim_info(area)
+	area=area.rename({info[0]:'i',info[1]:'j'})
+	
+	t=t.where(t.lev<300,drop=True)
+	s=s.where(s.lev<300,drop=True)
+ 
+	# If you want annual averages uncomments these lines
+	print('>>> calculating annual averages...')
+	### annual averaging
+	## compue here to save memory in following steps
+	print('>> ...for T')
+	t=t.groupby('time.year').mean('time').compute()
+	print('>> ...for S')
+	s=s.groupby('time.year').mean('time').compute()
+	
+	print('>>> calculate density')
+	tmp = sw.eos80.dens0(s,t)
+	dens = xr.DataArray(tmp,coords=t.coords)
+	
+	# get arrays
+	if flag_interpolate:
+
+		poc_lev_flag=False
+		poc_lev_1=dens.sel(lev=200.0,method='nearest').lev.data
+		poc_lev_2=dens.sel(lev=200.0,method='backfill').lev.data
+		if poc_lev_2 == poc_lev_1:
+			poc_lev_2 = dens.sel(lev=200.0,method='pad').lev.data
+			poc_lev_flag=True
+
+		poc_levels=[poc_lev_1,poc_lev_2]
+		if poc_lev_1==200.0 and poc_lev_2==200.0:
+			poc_scalar=0.0
+		else:
+			poc_scalar=(200.0-min(poc_levels)) / (max(poc_levels)-min(poc_levels))
+
+		# get data at levels - upper
+		exp = dens.isel(lev=0).compute()
+
+                # get data at levels - lower
+		print('>>> interpolating density data between',min(poc_levels),'and',max(poc_levels),'to',200.0,'m')
+		flux_poc_1 = dens.sel(lev=200.0, method="nearest").compute() # export flux at nearest level above z = depth
+		if poc_lev_flag:
+                        flux_poc_2 = dens.sel(lev=200.0, method="pad").compute() # export flux at other level
+		else:
+                        flux_poc_2 = dens.sel(lev=200.0, method="backfill").compute()
+                
+		if poc_levels[0] < poc_levels[1]:
+			deep = (flux_poc_1 * (1.0 - poc_scalar)) + (flux_poc_2 * poc_scalar)
+		else:
+			deep = (flux_poc_1 * poc_scalar) + (flux_poc_2 *(1.0 - poc_scalar))
+
+	else:
+		exp=dens.sel(lev=exp_horizon,method='nearest')
+		deep=dens.sel(lev=poc_horizon,method='nearest')
+		print('>>> selecting nearest depth levels:',dens.sel(lev=0.0,method='nearest').lev.data,dens.sel(lev=200.0,method='nearest').lev.data)
+
+
+	#print('>>> calculating annual averages')
+        ### annual averaging
+        # compue here to save memory in following steps 
+	#exp=exp.groupby('time.year').mean('time').compute()
+	#deep=deep.groupby('time.year').mean('time').compute()
+
+	print('>>> calculate stratification index')
+	# volume averaging nd calculate global total time-series
+	strat=deep-exp 
+	# weight by area
+	weights = area/area.sum(dim=['i','j'])
+	weights = weights.fillna(0)
+	weighted_strat = strat.weighted(weights)
+               
+ 
+	print('>>> output timeseries') 
+	# convert to global mean timeseries	
+	strat_timeseries=weighted_strat.mean(dim=['i','j'])
+	#strat_timeseries = strat.mean(dim=['i','j'])
+	strat_timeseries=strat_timeseries.rename('stratification')
+	strat_timeseries=strat_timeseries.to_dataset()
+        
+	return strat_timeseries
+###### END #####
+
+def compute_O2sat_timeseries(dataset_o2,dataset_T,dataset_S,dataset_V,model_name,nstart,nend,output_dir):
+# compute_O2sat_timeseries()
+#
+# description: takes in dataset with o2, temperature, salinity and volume, calculates O2 saturation, calculates annual mean/total timeseries
+#
+# inputs:
+#|      dataset - xarray datset containing o2, thetao, so, (and volume if 4D)
+#|      model_name - name of model when saving output
+#	output_dir - relative path to output directory (include / at the end!)
+#
+# outputs:
+#|      returned array - O2sat_timeseries (monthly or yearly)
+#
+# author: Jamie D. Wilson (adapted from code by Anna Katavouta, Emily Vosper)
+
+
+	######################################
+	###### hard coded user options #######
+	sec_to_yr=60.0*60.0*24.0*365.0 # seconds to year
+	mol_to_g_O=15.99 # mol to gram for oxygen
+	g_to_Pg=1.0/1.0e15 # grams to Petagrams
+	####################################
+
+	o2=dataset_o2.o2[nstart:nend,:,:,:]
+	t=dataset_T.thetao[nstart:nend,:,:,:]
+	s=dataset_S.so[nstart:nend,:,:,:]
+	if len(dataset_V.volcello.dims)>3:
+		volume=dataset_V.volcello[nstart:nend,:,:,:]
+	else:
+		volume=dataset_V.volcello
+
+	# get info to force consistent renaming of dimensions/coordinates
+	info=dim_info(o2)
+	o2=o2.rename({info[0]:'i',info[1]:'j',info[2]:'lev'})
+
+	info=dim_info(volume)
+	volume=volume.rename({info[0]:'i',info[1]:'j',info[2]:'lev'})
+
+	info=dim_info(t)
+	t=t.rename({info[0]:'i',info[1]:'j',info[2]:'lev'})
+
+	info=dim_info(s)
+	s=s.rename({info[0]:'i',info[1]:'j',info[2]:'lev'})
+        
+        # If you want annual averages uncomments these lines
+	print('>>> calculating annual averages...')
+	### annual averaging
+	## compue here to save memory in following steps
+	print('>> ...for O2')
+	o2=o2.groupby('time.year').mean('time').compute()
+	print('>> ...for T')
+	t=t.groupby('time.year').mean('time').compute()
+	print('>> ...for S')
+	s=s.groupby('time.year').mean('time').compute()
+	if len(volume.dims)>3:
+		print('>> ...for volume (because it is varying with time)')
+		volume=volume.groupby('time.year').mean('time').compute()
+
+	print('>>> calculate oxygen saturation')
+	# oxygen at saturation 
+	oxygen_sat = compute_o2sat(t,s)
+	dens = sw.eos80.dens0(s,t)
+	# conver from to ml l-1 to mol m-3
+	oxygen_sat = oxygen_sat * dens
+	#oxygen_sat_per =  (oxygen/oxygen_sat)*100.0
+
+	print('>>> calculate total oxygen saturation')
+	# volume averaging nd calculate global total time-series
+	O2sat=((oxygen_sat*volume) * mol_to_g_O * g_to_Pg).compute()
+	
+	print('>>> output timeseries of oxygen saturation')
+	O2sat_timeseries = O2sat.sum(dim=['lev','i','j'])
+	O2sat_timeseries=O2sat_timeseries.rename('O2sat')
+	O2sat_timeseries=O2sat_timeseries.to_dataset()
+        
+	return O2sat_timeseries
+###### END #####
+
+
 def compute_AOU_Csoft(dataset_o2,dataset_T,dataset_S,dataset_V,model_name,nstart,nend,output_dir):
 # compute_AOU_Csoft()
 #
